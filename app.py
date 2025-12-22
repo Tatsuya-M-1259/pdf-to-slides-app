@@ -7,19 +7,18 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
-# セキュリティチェックを緩和（localhost対策）
+# http通信を許可する設定
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
-# APIの権限範囲
 SCOPES = [
     'https://www.googleapis.com/auth/presentations',
     'https://www.googleapis.com/auth/drive.file'
 ]
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-st.title("📄 PDFをGoogleスライドに変換 (画像貼り付け)")
-st.caption("PDFの各ページを高画質な画像として、新しいGoogleスライドに1枚ずつ貼り付けます。")
+st.title("📄 PDFをGoogleスライドに変換 (改良版)")
 
+# --- 認証処理 ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
@@ -47,49 +46,71 @@ def authenticate_google():
                 }
             }
             
-            # Flowをセッションに保持
             if 'auth_flow' not in st.session_state:
-                st.session_state.auth_flow = Flow.from_client_config(
-                    client_config, 
-                    scopes=SCOPES,
-                    redirect_uri='http://localhost'
-                )
+                st.session_state.auth_flow = Flow.from_client_config(client_config, scopes=SCOPES, redirect_uri='http://localhost')
             
             flow = st.session_state.auth_flow
             auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
             
             st.info("💡 Google認証が必要です。")
-            st.markdown(f"**手順1:** [👉 ここをクリックしてGoogle認証を開く]({auth_url})")
-            st.write("**手順2:** 認証後、ブラウザがエラーになります。その時の**URL欄（アドレスバー）の内容をすべてコピー**してください。")
-            
-            auth_response = st.text_input("**手順3:** コピーしたURLをここに貼り付けてEnter:", key="auth_input_final")
+            st.markdown(f"**手順1:** [👉 認証を開始する]({auth_url})")
+            auth_response = st.text_input("**手順2:** エラー画面のURLをここに貼り付けてEnter:", key="auth_input")
             
             if auth_response:
                 try:
-                    # 【ここが解決の鍵】URLから code= 以降だけを抜き出し、stateチェックをバイパスします
                     if "code=" in auth_response:
                         auth_code = auth_response.split("code=")[1].split("&")[0]
                     else:
                         auth_code = auth_response
-                    
-                    # fetch_token(code=...) を使うことで CSRF Warning を回避
                     flow.fetch_token(code=auth_code)
                     creds = flow.credentials
                     st.session_state.google_creds = creds
-                    st.success("認証に成功しました！🎉")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"認証に失敗しました。もう一度リンクからやり直してください。: {e}")
-                    if st.button("認証を最初からやり直す"):
-                        if 'auth_flow' in st.session_state:
-                            del st.session_state.auth_flow
-                        st.rerun()
+                    st.error(f"認証失敗: {e}")
     return creds
 
-# --- メイン画面 ---
-creds = authenticate_google()
+# --- 画像位置を中央にリセットする関数 ---
+def reset_images_position(presentation_id, creds):
+    slides_service = build('slides', 'v1', credentials=creds)
+    presentation = slides_service.presentations().get(presentationId=presentation_id).execute()
+    slides = presentation.get('slides', [])
+    
+    requests = []
+    # Googleスライドの標準サイズ (16:9) は 720pt x 405pt
+    SLIDE_W = 720
+    SLIDE_H = 405
 
-uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
+    for slide in slides:
+        elements = slide.get('pageElements', [])
+        for element in elements:
+            if 'image' in element:
+                obj_id = element['objectId']
+                # 中央配置のための計算
+                img_w = element['size']['width']['magnitude']
+                img_h = element['size']['height']['magnitude']
+                
+                requests.append({
+                    'updatePageElementTransform': {
+                        'objectId': obj_id,
+                        'applyMode': 'ABSOLUTE',
+                        'transform': {
+                            'scaleX': 1, 'scaleY': 1,
+                            'translateX': (SLIDE_W - img_w) / 2,
+                            'translateY': (SLIDE_H - img_h) / 2,
+                            'unit': 'PT'
+                        }
+                    }
+                })
+    
+    if requests:
+        slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': requests}).execute()
+        return True
+    return False
+
+# --- メイン処理 ---
+creds = authenticate_google()
+uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
 
 if uploaded_file and creds:
     if st.button("🚀 スライド作成を開始"):
@@ -97,34 +118,38 @@ if uploaded_file and creds:
         drive_service = build('drive', 'v3', credentials=creds)
 
         try:
+            # 1. 新規スライド作成
             presentation = slides_service.presentations().create(body={'title': uploaded_file.name}).execute()
             presentation_id = presentation.get('presentationId')
+            # 最初の空白スライドのIDを記憶しておく
+            first_slide_id = presentation.get('slides')[0].get('objectId')
             
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             total_pages = len(doc)
             progress_bar = st.progress(0)
-            status_text = st.empty()
 
             for i, page in enumerate(doc):
-                status_text.text(f"処理中: {i+1} / {total_pages} ページ目")
+                # 2. PDFを画像化
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 img_data = pix.tobytes("png")
                 
-                # ドライブに一時保存
-                file_metadata = {'name': f'temp_{i}.png', 'parents': ['root']}
+                # 3. ドライブに保存
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
-                file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+                file = drive_service.files().create(body={'name': f't_{i}.png'}, media_body=media, fields='id').execute()
                 file_id = file.get('id')
-                
-                # 一時的に誰でも閲覧可能にしてSlides APIに渡す
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
-                page_id = f"page_obj_{i}"
+                # 4. スライド追加と画像の中央配置
+                # 画像サイズをスライドの高さ(405pt)に合わせる計算
                 requests = [
-                    {'createSlide': {'objectId': page_id}},
+                    {'createSlide': {'objectId': f'pg_{i}'}},
                     {'createImage': {
-                        'elementProperties': {'pageObjectId': page_id},
+                        'elementProperties': {
+                            'pageObjectId': f'pg_{i}',
+                            'size': {'height': {'magnitude': 350, 'unit': 'PT'}, 'width': {'magnitude': 600, 'unit': 'PT'}},
+                            'transform': {'scaleX': 1, 'scaleY': 1, 'translateX': 60, 'translateY': 27, 'unit': 'PT'}
+                        },
                         'url': file_url
                     }}
                 ]
@@ -132,9 +157,23 @@ if uploaded_file and creds:
                 drive_service.files().delete(fileId=file_id).execute()
                 progress_bar.progress((i + 1) / total_pages)
 
+            # 5. 最後に最初の空白スライドを削除
+            slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
+            
+            st.session_state.last_presentation_id = presentation_id
             st.balloons()
-            st.success("✅ スライドが完成しました！")
-            st.markdown(f"### [作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
+            st.success("✅ 完成しました！")
+            st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
 
         except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
+            st.error(f"エラー: {e}")
+
+    # 位置リセットボタン（作成完了後に表示）
+    if 'last_presentation_id' in st.session_state:
+        st.divider()
+        st.subheader("🛠️ スライドの微調整")
+        if st.button("🖼️ 全ての画像の位置を中央にリセットする"):
+            if reset_images_position(st.session_state.last_presentation_id, creds):
+                st.toast("画像の位置を中央に戻しました！")
+            else:
+                st.warning("リセット対象の画像が見つかりませんでした。")
