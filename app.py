@@ -18,48 +18,72 @@ st.set_page_config(page_title="PDF to Google Slides", layout="wide")
 st.title("📄 PDFをGoogleスライドに変換 (画像貼り付け)")
 st.caption("PDFの各ページを高画質な画像として、新しいGoogleスライドに1枚ずつ貼り付けます。")
 
-# 認証処理の関数
+# --- 認証処理の関数（サーバー対応・手動コード方式） ---
 def authenticate_google():
     creds = None
-    # Streamlitのセッション内で認証情報を保持
+    # セッション内で認証情報を保持
     if 'google_creds' in st.session_state:
         creds = st.session_state.google_creds
 
+    # 有効な認証情報がない場合
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # secrets.toml または Streamlit Cloud の Secrets から情報を取得
+            try:
+                creds.refresh(Request())
+                st.session_state.google_creds = creds
+            except:
+                creds = None # リフレッシュ失敗時は再認証
+
+        if not creds:
+            # Secretsから設定を読み込み
             client_config = {
-                "installed": {
+                "web": {
                     "client_id": st.secrets["google_oauth"]["client_id"],
                     "project_id": st.secrets["google_oauth"]["project_id"],
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
                     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
                     "client_secret": st.secrets["google_oauth"]["client_secret"],
-                    "redirect_uris": ["http://localhost"]
+                    "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"]
                 }
             }
+            
             flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            # ローカル実行時はサーバーを立て、クラウド時はURLを表示
-            creds = flow.run_local_server(port=0)
-        st.session_state.google_creds = creds
+            
+            # サーバー環境用の認証リンクを作成
+            auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+            
+            st.info("💡 サーバー環境のため、手動でGoogle認証が必要です。")
+            st.markdown(f"**手順1:** [👉 ここをクリックしてGoogle認証を開く]({auth_url})")
+            st.write("**手順2:** 認証後、ブラウザがエラー画面になりますが、その時の**URL欄**（アドレスバー）の内容をすべてコピーしてください。")
+            
+            # 認証コード（URL）を入力する欄
+            auth_response = st.text_input("**手順3:** コピーしたURL（または code= 以降）をここに貼り付けてEnter:")
+            
+            if auth_response:
+                try:
+                    # URLからcodeパラメータを抽出するか、codeそのものを利用
+                    if "code=" in auth_response:
+                        code = auth_response.split("code=")[1].split("&")[0]
+                    else:
+                        code = auth_response
+                    
+                    flow.fetch_token(code=code)
+                    creds = flow.credentials
+                    st.session_state.google_creds = creds
+                    st.success("認証成功！「スライド作成を開始」ボタンを押してください。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"認証に失敗しました。正しいURLを貼り付けてください。エラー: {e}")
     return creds
 
-# メイン処理
-if st.button("Googleアカウントでログイン"):
-    try:
-        st.session_state.creds = authenticate_google()
-        st.success("ログインに成功しました！")
-    except Exception as e:
-        st.error(f"ログインエラー: {e}")
+# --- メイン画面 ---
+creds = authenticate_google()
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
 
-if uploaded_file and 'creds' in st.session_state:
+if uploaded_file and creds:
     if st.button("🚀 スライド作成を開始"):
-        creds = st.session_state.creds
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
 
@@ -78,42 +102,35 @@ if uploaded_file and 'creds' in st.session_state:
             for i, page in enumerate(doc):
                 status_text.text(f"処理中: {i+1} / {total_pages} ページ目")
                 
-                # 2. PDFページを画像に変換（高画質設定）
+                # 2. PDFページを画像に変換
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 img_data = pix.tobytes("png")
                 
                 # 3. 画像をGoogleドライブに一時保存
-                file_metadata = {
-                    'name': f'temp_slide_img_{i}.png',
-                    'parents': ['root'] # ルート直下に保存
-                }
+                file_metadata = {'name': f'temp_slide_img_{i}.png', 'parents': ['root']}
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
                 file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 
                 # 4. Slides APIからアクセスできるように権限を一時公開
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-                
-                # 画像の直リンクURL
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
                 # 5. スライドの追加と画像の挿入
+                page_id = f"page_obj_{i}"
                 requests = [
-                    {'createSlide': {'objectId': f'page_{i}'}}, # スライド作成
+                    {'createSlide': {'objectId': page_id}},
                     {'createImage': {
-                        'elementProperties': {'pageObjectId': f'page_{i}'},
+                        'elementProperties': {'pageObjectId': page_id},
                         'url': file_url
                     }}
                 ]
                 slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': requests}).execute()
                 
-                # 6. 使い終わった一時画像ファイルを削除（ドライブを汚さないため）
+                # 6. 一時画像ファイルを削除
                 drive_service.files().delete(fileId=file_id).execute()
                 
                 progress_bar.progress((i + 1) / total_pages)
-
-            # 最初の空スライド（デフォルトの1枚目）を削除（任意）
-            # slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': 'p'}}]}).execute()
 
             st.balloons()
             st.success("✅ スライドが完成しました！")
