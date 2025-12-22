@@ -1,8 +1,6 @@
 import streamlit as st
 import fitz  # PyMuPDF
 import io
-import os
-from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -18,51 +16,46 @@ st.set_page_config(page_title="PDF to Google Slides", layout="wide")
 st.title("📄 PDFをGoogleスライドに変換 (画像貼り付け)")
 st.caption("PDFの各ページを高画質な画像として、新しいGoogleスライドに1枚ずつ貼り付けます。")
 
-# --- 認証処理の関数（サーバー対応・手動コード方式） ---
+# --- 認証処理の関数（修正：installedキーを使用） ---
 def authenticate_google():
     creds = None
-    # セッション内で認証情報を保持
     if 'google_creds' in st.session_state:
         creds = st.session_state.google_creds
 
-    # 有効な認証情報がない場合
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 st.session_state.google_creds = creds
             except:
-                creds = None # リフレッシュ失敗時は再認証
+                creds = None
 
         if not creds:
-            # Secretsから設定を読み込み
+            # デスクトップアプリ形式の設定（キーを installed に変更）
             client_config = {
-                "web": {
+                "installed": {
                     "client_id": st.secrets["google_oauth"]["client_id"],
                     "project_id": st.secrets["google_oauth"]["project_id"],
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
                     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
                     "client_secret": st.secrets["google_oauth"]["client_secret"],
-                    "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"]
+                    "redirect_uris": ["http://localhost"]
                 }
             }
             
+            # 認証フローの開始
             flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            
-            # サーバー環境用の認証リンクを作成
             auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
             
-            st.info("💡 サーバー環境のため、手動でGoogle認証が必要です。")
+            st.info("💡 Google認証が必要です。")
             st.markdown(f"**手順1:** [👉 ここをクリックしてGoogle認証を開く]({auth_url})")
-            st.write("**手順2:** 認証後、ブラウザがエラー画面になりますが、その時の**URL欄**（アドレスバー）の内容をすべてコピーしてください。")
+            st.write("**手順2:** 認証後、ブラウザが「接続できません」となりますが、その時の**アドレスバー（URL）の内容をすべてコピー**して下に貼り付けてください。")
             
-            # 認証コード（URL）を入力する欄
             auth_response = st.text_input("**手順3:** コピーしたURL（または code= 以降）をここに貼り付けてEnter:")
             
             if auth_response:
                 try:
-                    # URLからcodeパラメータを抽出するか、codeそのものを利用
                     if "code=" in auth_response:
                         code = auth_response.split("code=")[1].split("&")[0]
                     else:
@@ -71,10 +64,10 @@ def authenticate_google():
                     flow.fetch_token(code=code)
                     creds = flow.credentials
                     st.session_state.google_creds = creds
-                    st.success("認証成功！「スライド作成を開始」ボタンを押してください。")
+                    st.success("認証成功！")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"認証に失敗しました。正しいURLを貼り付けてください。エラー: {e}")
+                    st.error(f"認証に失敗しました。URLが正しいか確認してください。: {e}")
     return creds
 
 # --- メイン画面 ---
@@ -88,36 +81,28 @@ if uploaded_file and creds:
         drive_service = build('drive', 'v3', credentials=creds)
 
         try:
-            # 1. 新規スライドの作成
             presentation = slides_service.presentations().create(body={'title': uploaded_file.name}).execute()
             presentation_id = presentation.get('presentationId')
             
-            # PDFの読み込み
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             total_pages = len(doc)
-            
             progress_bar = st.progress(0)
             status_text = st.empty()
 
             for i, page in enumerate(doc):
                 status_text.text(f"処理中: {i+1} / {total_pages} ページ目")
-                
-                # 2. PDFページを画像に変換
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 img_data = pix.tobytes("png")
                 
-                # 3. 画像をGoogleドライブに一時保存
-                file_metadata = {'name': f'temp_slide_img_{i}.png', 'parents': ['root']}
+                file_metadata = {'name': f'temp_{i}.png', 'parents': ['root']}
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
                 file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 
-                # 4. Slides APIからアクセスできるように権限を一時公開
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
-                # 5. スライドの追加と画像の挿入
-                page_id = f"page_obj_{i}"
+                page_id = f"page_{i}"
                 requests = [
                     {'createSlide': {'objectId': page_id}},
                     {'createImage': {
@@ -126,15 +111,12 @@ if uploaded_file and creds:
                     }}
                 ]
                 slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': requests}).execute()
-                
-                # 6. 一時画像ファイルを削除
                 drive_service.files().delete(fileId=file_id).execute()
-                
                 progress_bar.progress((i + 1) / total_pages)
 
             st.balloons()
-            st.success("✅ スライドが完成しました！")
+            st.success("✅ スライド完成！")
             st.markdown(f"### [作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
 
         except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
+            st.error(f"エラー: {e}")
