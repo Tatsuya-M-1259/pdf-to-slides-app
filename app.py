@@ -2,12 +2,12 @@ import streamlit as st
 import fitz  # PyMuPDF
 import io
 import os
+import time # キャッシュ対策用
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
-# セキュリティチェック緩和
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 SCOPES = [
@@ -20,9 +20,8 @@ SLIDE_W = 720
 SLIDE_H = 405
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-# 最新版が読み込まれたか確認するためのタイトル変更
-st.title("📄 PDFをGoogleスライドに変換 (全画面確定版 ver 3.0)")
-st.caption("PDFをスライドの端から端まで1ミリの狂いもなく強制的に引き伸ばします。")
+st.title("📄 PDFをGoogleスライドに変換 (最終確定版 ver 4.0)")
+st.caption("キャッシュを強制回避し、16:9の枠いっぱいにストレッチします。")
 
 # --- 認証処理 ---
 def authenticate_google():
@@ -74,7 +73,6 @@ def authenticate_google():
             st.stop()
     return creds
 
-# --- メイン処理 ---
 creds = authenticate_google()
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
 
@@ -83,10 +81,8 @@ if uploaded_file and creds:
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
         try:
-            # 1. 新規スライド作成
             presentation = slides_service.presentations().create(body={'title': uploaded_file.name}).execute()
             presentation_id = presentation.get('presentationId')
-            # 最初のデフォルトの空白スライドを記憶
             first_slide_id = presentation.get('slides')[0].get('objectId')
             
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -94,19 +90,19 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                # 2. PDFを高画質画像化 (鮮明にするため4倍に設定)
                 pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
                 img_data = pix.tobytes("png")
                 
-                # 3. ドライブ保存
+                # キャッシュ回避用のランダムIDを付与
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
-                file = drive_service.files().create(body={'name': f'tmp_{i}.png'}, media_body=media, fields='id').execute()
+                file = drive_service.files().create(body={'name': f'slide_img_{int(time.time())}_{i}.png'}, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-                file_url = f"https://drive.google.com/uc?id={file_id}"
+                
+                # URLの末尾にタイムスタンプを付けて、Googleに「新しい画像」だと思い込ませる
+                file_url = f"https://drive.google.com/uc?id={file_id}&t={int(time.time())}"
 
-                # 4. 【解決の要】BLANK（白紙）を指定し、サイズを強制的に 720x405 で配置
-                page_id = f"slide_{i}"
+                page_id = f"p_{int(time.time())}_{i}"
                 requests = [
                     {
                         'createSlide': {
@@ -135,11 +131,10 @@ if uploaded_file and creds:
                 drive_service.files().delete(fileId=file_id).execute()
                 progress_bar.progress((i + 1) / total_pages)
 
-            # 最初の不要な空白スライドを削除
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ 完璧なフルサイズスライドが完成しました！")
-            st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
+            st.success("✅ 今度こそ完璧なフルサイズで完成しました！")
+            st.markdown(f"### [👉 スライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
