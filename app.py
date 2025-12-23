@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
-# セキュリティチェックを緩和
+# セキュリティチェック緩和
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 SCOPES = [
@@ -15,7 +15,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.file'
 ]
 
-# Googleスライドの標準16:9サイズ (ポイント単位)
+# Googleスライド標準サイズ (16:9)
 SLIDE_W = 720
 SLIDE_H = 405
 
@@ -132,11 +132,11 @@ if uploaded_file and creds:
                 drive_service.files().delete(fileId=file_id).execute()
                 progress_bar.progress((i + 1) / total_pages)
 
-            # 最初の不要なスライドを削除
+            # 最初の不要な空白スライドを削除
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ 枠いっぱいのスライドが完成しました！")
+            st.success("✅ ついに枠いっぱいのスライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
