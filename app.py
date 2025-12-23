@@ -15,14 +15,14 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.file'
 ]
 
-# Googleスライドの標準16:9サイズ (ポイント単位)
+# Googleスライドの標準16:9サイズ
 SLIDE_W = 720
 SLIDE_H = 405
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-st.title("📄 PDFをGoogleスライドに変換 (全画面フィット版)")
+st.title("📄 PDFをGoogleスライドに変換 (全画面フィット確定版)")
 
-# --- 認証処理（省略なし） ---
+# --- 認証処理 ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
@@ -80,11 +80,12 @@ creds = authenticate_google()
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
 
 if uploaded_file and creds:
-    if st.button("🚀 高画質スライドを作成"):
+    if st.button("🚀 フルサイズでスライドを作成"):
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
 
         try:
+            # スライド新規作成
             presentation = slides_service.presentations().create(body={'title': uploaded_file.name}).execute()
             presentation_id = presentation.get('presentationId')
             first_slide_id = presentation.get('slides')[0].get('objectId')
@@ -94,28 +95,18 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                # 1. PDFページを画像化 (高画質 3倍)
-                pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
+                # 1. 高画質画像化 (倍率を3.5に上げ、鮮明度を優先)
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5))
                 img_data = pix.tobytes("png")
                 
-                # 2. PDFの縦横比から、スライド内での最大サイズを計算
-                pdf_w, pdf_h = page.rect.width, page.rect.height
-                ratio = min(SLIDE_W / pdf_w, SLIDE_H / pdf_h)
-                new_w = pdf_w * ratio
-                new_h = pdf_h * ratio
-                
-                # 中央配置のための余白計算
-                off_x = (SLIDE_W - new_w) / 2
-                off_y = (SLIDE_H - new_h) / 2
-
-                # 3. Googleドライブへ一時保存
+                # 2. ドライブ保存
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
                 file = drive_service.files().create(body={'name': f'tmp_{i}.png'}, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
-                # 4. スライド追加と画像配置
+                # 3. スライド配置（サイズを強制指定: 720x405, 位置: 0,0）
                 page_id = f"slide_{i}"
                 requests = [
                     {'createSlide': {'objectId': page_id}},
@@ -123,12 +114,12 @@ if uploaded_file and creds:
                         'elementProperties': {
                             'pageObjectId': page_id,
                             'size': {
-                                'width': {'magnitude': new_w, 'unit': 'PT'},
-                                'height': {'magnitude': new_h, 'unit': 'PT'}
+                                'width': {'magnitude': SLIDE_W, 'unit': 'PT'},
+                                'height': {'magnitude': SLIDE_H, 'unit': 'PT'}
                             },
                             'transform': {
                                 'scaleX': 1, 'scaleY': 1,
-                                'translateX': off_x, 'translateY': off_y, 'unit': 'PT'
+                                'translateX': 0, 'translateY': 0, 'unit': 'PT'
                             }
                         },
                         'url': file_url
@@ -138,11 +129,11 @@ if uploaded_file and creds:
                 drive_service.files().delete(fileId=file_id).execute()
                 progress_bar.progress((i + 1) / total_pages)
 
-            # 最初の空白スライドを削除
+            # 最初の空白スライドを確実に削除
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ スライドが完成しました！")
+            st.success("✅ フルサイズスライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
 
         except Exception as e:
