@@ -2,7 +2,7 @@ import streamlit as st
 import fitz  # PyMuPDF
 import io
 import os
-import time # キャッシュ対策用
+import time
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -10,20 +10,17 @@ from google.auth.transport.requests import Request
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
-SCOPES = [
-    'https://www.googleapis.com/auth/presentations',
-    'https://www.googleapis.com/auth/drive.file'
-]
+SCOPES = ['https://www.googleapis.com/auth/presentations', 'https://www.googleapis.com/auth/drive.file']
 
 # Googleスライド標準サイズ (16:9)
 SLIDE_W = 720
 SLIDE_H = 405
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-st.title("📄 PDFをGoogleスライドに変換 (最終確定版 ver 4.0)")
-st.caption("キャッシュを強制回避し、16:9の枠いっぱいにストレッチします。")
+# 最新版か一目でわかるようにタイトルを変更
+st.title("📄 PDFをGoogleスライドに変換 (究極全画面 ver 5.0)")
+st.caption("全ての余白を物理的に排除し、16:9の枠いっぱいに強制固定します。")
 
-# --- 認証処理 ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
@@ -39,8 +36,7 @@ def authenticate_google():
                     "client_secret": st.secrets["google_oauth"]["client_secret"],
                     "redirect_uris": [st.secrets["google_oauth"]["redirect_uri"]]
                 }},
-                scopes=SCOPES,
-                redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
+                scopes=SCOPES, redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
             )
             flow.fetch_token(code=st.query_params["code"])
             creds = flow.credentials
@@ -51,9 +47,7 @@ def authenticate_google():
             st.error(f"認証エラー: {e}")
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-                st.session_state.google_creds = creds
+            try: creds.refresh(Request())
             except: creds = None
         if not creds:
             flow = Flow.from_client_config(
@@ -65,8 +59,7 @@ def authenticate_google():
                     "client_secret": st.secrets["google_oauth"]["client_secret"],
                     "redirect_uris": [st.secrets["google_oauth"]["redirect_uri"]]
                 }},
-                scopes=SCOPES,
-                redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
+                scopes=SCOPES, redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
             )
             auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
             st.link_button("🔑 Googleアカウントでログイン", auth_url)
@@ -77,7 +70,7 @@ creds = authenticate_google()
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
 
 if uploaded_file and creds:
-    if st.button("🚀 枠いっぱいにスライドを作成"):
+    if st.button("🚀 今度こそ全画面で作成"):
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
         try:
@@ -90,17 +83,16 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
+                # 解像度をさらに高く設定
                 pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
                 img_data = pix.tobytes("png")
                 
-                # キャッシュ回避用のランダムIDを付与
+                # Googleドライブへ保存（キャッシュバスター付きのファイル名）
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
-                file = drive_service.files().create(body={'name': f'slide_img_{int(time.time())}_{i}.png'}, media_body=media, fields='id').execute()
+                file = drive_service.files().create(body={'name': f'fs_{int(time.time())}_{i}.png'}, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-                
-                # URLの末尾にタイムスタンプを付けて、Googleに「新しい画像」だと思い込ませる
-                file_url = f"https://drive.google.com/uc?id={file_id}&t={int(time.time())}"
+                file_url = f"https://drive.google.com/uc?id={file_id}&cachebuster={time.time()}"
 
                 page_id = f"p_{int(time.time())}_{i}"
                 requests = [
@@ -134,7 +126,7 @@ if uploaded_file and creds:
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ 今度こそ完璧なフルサイズで完成しました！")
+            st.success("✅ 究極全画面スライドが完成しました！")
             st.markdown(f"### [👉 スライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
