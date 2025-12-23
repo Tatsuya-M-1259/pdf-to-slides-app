@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
-# セキュリティチェックを緩和
+# セキュリティチェック緩和
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 SCOPES = [
@@ -20,14 +20,13 @@ SLIDE_W = 720
 SLIDE_H = 405
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-st.title("📄 PDFをGoogleスライドに変換 (余白ゼロ・エラー修正版)")
+st.title("📄 PDFをGoogleスライドに変換 (余白ゼロ・完結版)")
 
 # --- 認証処理（自動取得版） ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
         creds = st.session_state.google_creds
-
     if "code" in st.query_params and not creds:
         try:
             flow = Flow.from_client_config(
@@ -49,14 +48,12 @@ def authenticate_google():
             st.rerun()
         except Exception as e:
             st.error(f"認証エラー: {e}")
-
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 st.session_state.google_creds = creds
             except: creds = None
-        
         if not creds:
             flow = Flow.from_client_config(
                 {"web": {
@@ -83,7 +80,6 @@ if uploaded_file and creds:
     if st.button("🚀 枠いっぱいにスライドを作成"):
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
-
         try:
             # 1. 新規スライド作成
             presentation = slides_service.presentations().create(body={'title': uploaded_file.name}).execute()
@@ -95,7 +91,7 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                # 2. PDFを高画質画像化 (4倍で鮮明に)
+                # 2. PDFを高画質画像化 (鮮明にするため4倍に設定)
                 pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
                 img_data = pix.tobytes("png")
                 
@@ -106,7 +102,7 @@ if uploaded_file and creds:
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
-                # 4. 【解決の要】BLANK（白紙）を指定し、サイズを720x405に強制固定
+                # 4. 【解決の要】BLANK（白紙）を指定し、サイズを強制的に 720x405 で配置
                 page_id = f"slide_{i}"
                 requests = [
                     {
@@ -136,12 +132,11 @@ if uploaded_file and creds:
                 drive_service.files().delete(fileId=file_id).execute()
                 progress_bar.progress((i + 1) / total_pages)
 
-            # 最初の空白スライドを削除
+            # 最初の不要な空白スライドを削除
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ ついに完成しました！")
+            st.success("✅ 余白なしのフルサイズスライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
-
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
