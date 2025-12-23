@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
-# http通信を許可
+# セキュリティチェックを緩和
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 SCOPES = [
@@ -15,12 +15,12 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.file'
 ]
 
-# Googleスライド標準サイズ（16:9）
+# Googleスライドの標準16:9サイズ (ポイント単位)
 SLIDE_W = 720
 SLIDE_H = 405
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-st.title("📄 PDFをGoogleスライドに変換 (全画面フィット・強制版)")
+st.title("📄 PDFをGoogleスライドに変換 (全画面強制フィット版)")
 
 # --- 認証処理（自動取得版） ---
 def authenticate_google():
@@ -91,7 +91,7 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                # 2. PDFを高画質画像化 (4倍に設定)
+                # 2. PDFを高画質画像化 (鮮明にするため4倍に設定)
                 pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
                 img_data = pix.tobytes("png")
                 
@@ -102,7 +102,7 @@ if uploaded_file and creds:
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
-                # 4. 【最重要】BLANK（白紙）を指定し、サイズを強制的に 720x405 で配置
+                # 4. 【解決の要】BLANK（白紙）を指定し、サイズを強制的に 720x405 で配置
                 page_id = f"slide_{i}"
                 requests = [
                     {
@@ -136,7 +136,7 @@ if uploaded_file and creds:
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ 完璧なフルサイズスライドが完成しました！")
+            st.success("✅ 枠いっぱいのスライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
