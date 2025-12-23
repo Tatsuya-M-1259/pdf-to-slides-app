@@ -10,51 +10,19 @@ from google.auth.transport.requests import Request
 # セキュリティチェックを緩和
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
-# 1. APIの権限範囲の設定
 SCOPES = [
     'https://www.googleapis.com/auth/presentations',
     'https://www.googleapis.com/auth/drive.file'
 ]
 
-# Googleスライドの標準サイズ（16:9）
-SLIDE_WIDTH = 720
-SLIDE_HEIGHT = 405
+# Googleスライドの標準16:9サイズ (ポイント単位)
+SLIDE_W = 720
+SLIDE_H = 405
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-st.title("📄 PDFをGoogleスライドに変換 (スライド枠いっぱい)")
-st.caption("PDFの各ページを、Googleスライドの枠いっぱいに合わせて貼り付けます。")
+st.title("📄 PDFをGoogleスライドに変換 (全画面フィット版)")
 
-# --- 画像位置を中央にリセットする関数（※今回は初期配置で対応するため、補助機能として残します） ---
-def reset_images_position(presentation_id, creds):
-    slides_service = build('slides', 'v1', credentials=creds)
-    presentation = slides_service.presentations().get(presentationId=presentation_id).execute()
-    slides = presentation.get('slides', [])
-    requests = []
-    for slide in slides:
-        elements = slide.get('pageElements', [])
-        for element in elements:
-            if 'image' in element:
-                obj_id = element['objectId']
-                img_w = element['size']['width']['magnitude']
-                img_h = element['size']['height']['magnitude']
-                requests.append({
-                    'updatePageElementTransform': {
-                        'objectId': obj_id,
-                        'applyMode': 'ABSOLUTE',
-                        'transform': {
-                            'scaleX': 1, 'scaleY': 1,
-                            'translateX': (SLIDE_WIDTH - img_w) / 2,
-                            'translateY': (SLIDE_HEIGHT - img_h) / 2,
-                            'unit': 'PT'
-                        }
-                    }
-                })
-    if requests:
-        slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': requests}).execute()
-        return True
-    return False
-
-# --- 認証処理（自動取得版） ---
+# --- 認証処理 ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
@@ -80,15 +48,14 @@ def authenticate_google():
             st.query_params.clear()
             st.rerun()
         except Exception as e:
-            st.error(f"認証コードの取得に失敗しました: {e}")
+            st.error(f"認証エラー: {e}")
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 st.session_state.google_creds = creds
-            except:
-                creds = None
+            except: creds = None
         
         if not creds:
             flow = Flow.from_client_config(
@@ -104,20 +71,16 @@ def authenticate_google():
                 redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
             )
             auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
-            
-            st.info("💡 PDFをスライドに変換するにはGoogleログインが必要です。")
             st.link_button("🔑 Googleアカウントでログイン", auth_url)
             st.stop()
-            
     return creds
 
-# --- メイン画面 ---
+# --- メイン処理 ---
 creds = authenticate_google()
-
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
 
 if uploaded_file and creds:
-    if st.button("🚀 スライド作成を開始"):
+    if st.button("🚀 高画質スライドを作成"):
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
 
@@ -131,48 +94,56 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                # 高画質化のために倍率を少し上げます (2→3)
+                # 1. PDFページを画像化 (高画質 3倍)
                 pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
                 img_data = pix.tobytes("png")
                 
+                # 2. PDFの縦横比から、スライド内での最大サイズを計算
+                pdf_w, pdf_h = page.rect.width, page.rect.height
+                ratio = min(SLIDE_W / pdf_w, SLIDE_H / pdf_h)
+                new_w = pdf_w * ratio
+                new_h = pdf_h * ratio
+                
+                # 中央配置のための余白計算
+                off_x = (SLIDE_W - new_w) / 2
+                off_y = (SLIDE_H - new_h) / 2
+
+                # 3. Googleドライブへ一時保存
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
-                file = drive_service.files().create(body={'name': f'temp_{i}.png'}, media_body=media, fields='id').execute()
+                file = drive_service.files().create(body={'name': f'tmp_{i}.png'}, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
+                # 4. スライド追加と画像配置
                 page_id = f"slide_{i}"
-                # --- ここが修正ポイント ---
-                # 画像をスライドサイズ(720x405)いっぱいに配置し、位置を左上(0,0)にします
                 requests = [
                     {'createSlide': {'objectId': page_id}},
                     {'createImage': {
                         'elementProperties': {
                             'pageObjectId': page_id,
-                            'size': {'height': {'magnitude': SLIDE_HEIGHT, 'unit': 'PT'}, 'width': {'magnitude': SLIDE_WIDTH, 'unit': 'PT'}},
-                            'transform': {'scaleX': 1, 'scaleY': 1, 'translateX': 0, 'translateY': 0, 'unit': 'PT'}
+                            'size': {
+                                'width': {'magnitude': new_w, 'unit': 'PT'},
+                                'height': {'magnitude': new_h, 'unit': 'PT'}
+                            },
+                            'transform': {
+                                'scaleX': 1, 'scaleY': 1,
+                                'translateX': off_x, 'translateY': off_y, 'unit': 'PT'
+                            }
                         },
                         'url': file_url
                     }}
                 ]
-                # ------------------------
                 slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': requests}).execute()
                 drive_service.files().delete(fileId=file_id).execute()
                 progress_bar.progress((i + 1) / total_pages)
 
+            # 最初の空白スライドを削除
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
-            st.session_state.last_presentation_id = presentation_id
             st.balloons()
             st.success("✅ スライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
 
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
-
-    if 'last_presentation_id' in st.session_state:
-        st.divider()
-        # 今回の修正で初期位置がスライドいっぱいになるため、このボタンはあまり使わなくなるかもしれません
-        if st.button("🖼️ 画像の位置を中央にリセットする (枠に合わせて縮小されます)"):
-            if reset_images_position(st.session_state.last_presentation_id, creds):
-                st.toast("画像を中央に再配置しました。")
