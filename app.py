@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
-# セキュリティチェックを緩和
+# セキュリティチェック緩和
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 SCOPES = [
@@ -15,15 +15,18 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.file'
 ]
 
+# Googleスライド標準サイズ (16:9)
+SLIDE_W = 720
+SLIDE_H = 405
+
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-st.title("📄 PDFをGoogleスライドに変換 (サイズ完全合致版)")
+st.title("📄 PDFをGoogleスライドに変換 (余白ゼロ確定版)")
 
 # --- 認証処理（自動取得版） ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
         creds = st.session_state.google_creds
-
     if "code" in st.query_params and not creds:
         try:
             flow = Flow.from_client_config(
@@ -45,14 +48,12 @@ def authenticate_google():
             st.rerun()
         except Exception as e:
             st.error(f"認証エラー: {e}")
-
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 st.session_state.google_creds = creds
             except: creds = None
-        
         if not creds:
             flow = Flow.from_client_config(
                 {"web": {
@@ -76,72 +77,56 @@ creds = authenticate_google()
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
 
 if uploaded_file and creds:
-    if st.button("🚀 完璧なサイズでスライドを作成"):
+    if st.button("🚀 枠いっぱいにスライドを作成"):
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
-
         try:
-            # 1. PDFのサイズを取得
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            pdf_w = doc[0].rect.width
-            pdf_h = doc[0].rect.height
-            total_pages = len(doc)
-
-            # 2. 新規スライド作成
+            # 1. 新規スライド作成
             presentation = slides_service.presentations().create(body={'title': uploaded_file.name}).execute()
             presentation_id = presentation.get('presentationId')
             first_slide_id = presentation.get('slides')[0].get('objectId')
-
-            # 3. 【重要】スライドのサイズをPDFのサイズに変更する
-            slides_service.presentations().batchUpdate(
-                presentationId=presentation_id,
-                body={
-                    'requests': [{
-                        'updatePresentationObjectLayout': {
-                            'objectId': presentation_id,
-                            'pageLayoutReference': 'BLANK' # 白紙を適用
-                        }
-                    }, {
-                        'updatePageProperties': {
-                            'objectId': presentation_id,
-                            'pageProperties': {
-                                'pageSize': {
-                                    'width': {'magnitude': pdf_w, 'unit': 'PT'},
-                                    'height': {'magnitude': pdf_h, 'unit': 'PT'}
-                                }
-                            },
-                            'fields': 'pageSize'
-                        }
-                    }]
-                }
-            ).execute()
             
+            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            total_pages = len(doc)
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                # 高画質画像化
+                # 2. PDFを高画質画像化
                 pix = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5))
                 img_data = pix.tobytes("png")
                 
-                # ドライブ保存
+                # 3. ドライブ保存
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
                 file = drive_service.files().create(body={'name': f'tmp_{i}.png'}, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
-                # スライド追加と画像配置 (位置を0,0にして全面に貼る)
+                # 4. 白紙レイアウトを指定して作成し、画像を720x405で強制配置
                 page_id = f"slide_{i}"
                 requests = [
-                    {'createSlide': {'objectId': page_id, 'slideLayoutReference': {'predefinedLayout': 'BLANK'}}},
-                    {'createImage': {
-                        'elementProperties': {
-                            'pageObjectId': page_id,
-                            'size': {'width': {'magnitude': pdf_w, 'unit': 'PT'}, 'height': {'magnitude': pdf_h, 'unit': 'PT'}},
-                            'transform': {'scaleX': 1, 'scaleY': 1, 'translateX': 0, 'translateY': 0, 'unit': 'PT'}
-                        },
-                        'url': file_url
-                    }}
+                    {
+                        'createSlide': {
+                            'objectId': page_id,
+                            'slideLayoutReference': {'predefinedLayout': 'BLANK'}
+                        }
+                    },
+                    {
+                        'createImage': {
+                            'elementProperties': {
+                                'pageObjectId': page_id,
+                                'size': {
+                                    'width': {'magnitude': SLIDE_W, 'unit': 'PT'},
+                                    'height': {'magnitude': SLIDE_H, 'unit': 'PT'}
+                                },
+                                'transform': {
+                                    'scaleX': 1, 'scaleY': 1,
+                                    'translateX': 0, 'translateY': 0, 'unit': 'PT'
+                                }
+                            },
+                            'url': file_url
+                        }
+                    }
                 ]
                 slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': requests}).execute()
                 drive_service.files().delete(fileId=file_id).execute()
@@ -153,6 +138,5 @@ if uploaded_file and creds:
             st.balloons()
             st.success("✅ 余白ゼロのスライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
-
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
