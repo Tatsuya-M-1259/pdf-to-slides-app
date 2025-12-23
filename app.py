@@ -13,11 +13,21 @@ os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 SCOPES = ['https://www.googleapis.com/auth/presentations', 'https://www.googleapis.com/auth/drive.file']
 
+# スライド標準サイズ
+SLIDE_W = 720
+SLIDE_H = 405
+
+# 画面デザインの変更（確実に更新されたことを示すため、オレンジのヘッダーにします）
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-# 背景色を少し変えて、更新されたことを一目でわかるようにします
-st.markdown("""<style>.main { background-color: #f0f2f6; }</style>""", unsafe_allow_html=True)
-st.title("📄 PDFをGoogleスライドに変換 (背景埋め込み版 ver 6.0)")
-st.info("このバージョンでは画像をスライドの『背景』として設定し、余白を物理的に消滅させます。")
+st.markdown("""
+    <style>
+    .stApp { background-color: #fffaf0; }
+    h1 { color: #ff4b4b; border-bottom: 3px solid #ff4b4b; }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.title("📄 PDF to Google Slides (完ぺき版 ver 7.0)")
+st.warning("⚠️ PDFの『余白』を自動で切り落として、中身を最大化して貼り付けます。")
 
 def authenticate_google():
     creds = None
@@ -65,10 +75,10 @@ def authenticate_google():
     return creds
 
 creds = authenticate_google()
-uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
+uploaded_file = st.file_uploader("PDFファイルをアップロード", type="pdf")
 
 if uploaded_file and creds:
-    if st.button("🚀 背景としてスライドを作成"):
+    if st.button("🚀 余白をカットしてスライド作成"):
         slides_service = build('slides', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
         try:
@@ -81,33 +91,31 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
+                # 【新機能】内容がある領域を自動検知してトリミング
+                content_box = page.get_bbox() # 描画がある最小の枠を取得
+                # 少しだけマージン（5%）を残してカット
+                padding = 20
+                crop_rect = fitz.Rect(content_box[0]-padding, content_box[1]-padding, content_box[2]+padding, content_box[3]+padding)
+                
+                # トリミングした領域を高画質で画像化
+                pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=crop_rect)
                 img_data = pix.tobytes("png")
                 
                 media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
-                file = drive_service.files().create(body={'name': f'bg_{int(time.time())}_{i}.png'}, media_body=media, fields='id').execute()
+                file = drive_service.files().create(body={'name': f'trim_{int(time.time())}_{i}.png'}, media_body=media, fields='id').execute()
                 file_id = file.get('id')
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-                # 直リンクURLを作成
-                file_url = f"https://drive.google.com/uc?id={file_id}"
+                file_url = f"https://drive.google.com/uc?id={file_id}&t={time.time()}"
 
-                page_id = f"p_{int(time.time())}_{i}"
-                # スライドを追加し、その背景に画像を設定する
+                page_id = f"slide_{int(time.time())}_{i}"
                 requests = [
-                    {
-                        'createSlide': {
-                            'objectId': page_id,
-                            'slideLayoutReference': {'predefinedLayout': 'BLANK'}
-                        }
-                    },
+                    {'createSlide': {'objectId': page_id, 'slideLayoutReference': {'predefinedLayout': 'BLANK'}}},
                     {
                         'updatePageProperties': {
                             'objectId': page_id,
                             'pageProperties': {
                                 'pageBackgroundFill': {
-                                    'stretchedPictureFill': {
-                                        'contentUrl': file_url
-                                    }
+                                    'stretchedPictureFill': {'contentUrl': file_url}
                                 }
                             },
                             'fields': 'pageBackgroundFill'
@@ -115,15 +123,13 @@ if uploaded_file and creds:
                     }
                 ]
                 slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': requests}).execute()
-                # 削除は少し待ってから（Googleが読み込む時間を確保）
-                time.sleep(0.5)
                 drive_service.files().delete(fileId=file_id).execute()
                 progress_bar.progress((i + 1) / total_pages)
 
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ スライドの『背景』として全画面で作成しました！")
-            st.markdown(f"### [👉 スライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
+            st.success("✅ 余白をカットし、中身を最大化したスライドが完成しました！")
+            st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
