@@ -20,10 +20,11 @@ SLIDE_W = 720
 SLIDE_H = 405
 
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
-# タイトルにバージョンを入れて、最新コードが読み込まれたか確認できるようにします
-st.title("📄 PDFをGoogleスライドに変換 (全画面確定版 ver 2.0)")
+# 最新版が読み込まれたか確認するためのタイトル変更
+st.title("📄 PDFをGoogleスライドに変換 (全画面確定版 ver 3.0)")
+st.caption("PDFをスライドの端から端まで1ミリの狂いもなく強制的に引き伸ばします。")
 
-# --- 認証処理（自動取得版） ---
+# --- 認証処理 ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
@@ -85,6 +86,7 @@ if uploaded_file and creds:
             # 1. 新規スライド作成
             presentation = slides_service.presentations().create(body={'title': uploaded_file.name}).execute()
             presentation_id = presentation.get('presentationId')
+            # 最初のデフォルトの空白スライドを記憶
             first_slide_id = presentation.get('slides')[0].get('objectId')
             
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -103,7 +105,7 @@ if uploaded_file and creds:
                 drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
                 file_url = f"https://drive.google.com/uc?id={file_id}"
 
-                # 4. 【解決の要】BLANK（白紙）を指定し、画像をスライドサイズに強制的にストレッチ
+                # 4. 【解決の要】BLANK（白紙）を指定し、サイズを強制的に 720x405 で配置
                 page_id = f"slide_{i}"
                 requests = [
                     {
@@ -137,7 +139,7 @@ if uploaded_file and creds:
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ ついに枠いっぱいのスライドが完成しました！")
+            st.success("✅ 完璧なフルサイズスライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
