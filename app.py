@@ -22,7 +22,7 @@ SLIDE_H = 405
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
 st.title("📄 PDFをGoogleスライドに変換 (全画面フィット版)")
 
-# --- 認証処理 ---
+# --- 認証処理（省略なし） ---
 def authenticate_google():
     creds = None
     if 'google_creds' in st.session_state:
