@@ -17,17 +17,16 @@ SCOPES = ['https://www.googleapis.com/auth/presentations', 'https://www.googleap
 SLIDE_W = 720
 SLIDE_H = 405
 
-# 画面デザインの変更（確実に更新されたことを示すため、オレンジのヘッダーにします）
 st.set_page_config(page_title="PDF to Google Slides", layout="wide")
 st.markdown("""
     <style>
-    .stApp { background-color: #fffaf0; }
-    h1 { color: #ff4b4b; border-bottom: 3px solid #ff4b4b; }
+    .stApp { background-color: #f0f8ff; }
+    h1 { color: #007bff; border-bottom: 2px solid #007bff; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📄 PDF to Google Slides (完ぺき版 ver 7.0)")
-st.warning("⚠️ PDFの『余白』を自動で切り落として、中身を最大化して貼り付けます。")
+st.title("📄 PDF to Google Slides (完ぺき版 ver 7.1)")
+st.caption("エラーを修正しました。PDFの内容がある部分だけを自動で切り抜き、全画面で貼り付けます。")
 
 def authenticate_google():
     creds = None
@@ -91,11 +90,21 @@ if uploaded_file and creds:
             progress_bar = st.progress(0)
 
             for i, page in enumerate(doc):
-                # 【新機能】内容がある領域を自動検知してトリミング
-                content_box = page.get_bbox() # 描画がある最小の枠を取得
-                # 少しだけマージン（5%）を残してカット
-                padding = 20
-                crop_rect = fitz.Rect(content_box[0]-padding, content_box[1]-padding, content_box[2]+padding, content_box[3]+padding)
+                # 【修正ポイント】内容がある領域を安全に検知
+                content_box = page.get_text_bbox() # まずテキストの範囲を取得
+                
+                # テキストがない場合や範囲が異常な場合は、ページ全体のサイズを使用
+                if content_box[2] <= content_box[0] or content_box[3] <= content_box[1]:
+                    crop_rect = page.rect
+                else:
+                    # 少しだけ余裕（マージン）を持たせる
+                    padding = 15
+                    crop_rect = fitz.Rect(
+                        max(0, content_box[0] - padding),
+                        max(0, content_box[1] - padding),
+                        min(page.rect.width, content_box[2] + padding),
+                        min(page.rect.height, content_box[3] + padding)
+                    )
                 
                 # トリミングした領域を高画質で画像化
                 pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=crop_rect)
@@ -129,7 +138,7 @@ if uploaded_file and creds:
             slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': [{'deleteObject': {'objectId': first_slide_id}}]}).execute()
             
             st.balloons()
-            st.success("✅ 余白をカットし、中身を最大化したスライドが完成しました！")
+            st.success("✅ 余白をカットしたスライドが完成しました！")
             st.markdown(f"### [👉 作成されたスライドを開く](https://docs.google.com/presentation/d/{presentation_id})")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
